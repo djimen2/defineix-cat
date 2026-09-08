@@ -1,0 +1,34 @@
+/* Correccions específiques per pantalles tàctils.
+   Safari/iOS pot mantenir :hover després d'un toc i semblar que una resposta
+   està preseleccionada a la pregunta següent. */
+
+@media (hover: none), (pointer: coarse) {
+  .option {
+    -webkit-tap-highlight-color: transparent;
+  }
+
+  /* En tàctil, una opció neutra sempre ha de semblar neutra abans de tocar-la. */
+  .option:not(.is-correct):not(.is-wrong):hover:not(:disabled),
+  .option:not(.is-correct):not(.is-wrong):focus:not(:focus-visible) {
+    border-color: #e1deef;
+    background: #fff;
+    transform: none;
+    box-shadow: none;
+    outline: none;
+  }
+
+  /* Evita també que altres targetes/botons quedin visualment en hover enganxat. */
+  .btn:hover:not(:disabled) {
+    transform: none;
+  }
+
+  .mode-card:hover {
+    transform: none;
+  }
+}
+
+/* Manté una indicació accessible quan realment es navega amb teclat. */
+.option:focus-visible {
+  outline: 3px solid rgba(91,75,219,.35);
+  outline-offset: 2px;
+}
