@@ -9,12 +9,12 @@
   function neutralText(value) {
     const text = stripEnding(value);
     return text.replace(/^(\s*["'«“¿¡(\[]*)([A-ZÀ-ÖØ-ÝÇ])/, (all, prefix, letter) =>
-      prefix + letter.toLocaleLowerCase('ca')
+      prefix + letter.toLowerCase()
     );
   }
 
   function comparable(value) {
-    return stripEnding(value).replace(/\s+/g, ' ').trim().toLocaleLowerCase('ca');
+    return stripEnding(value).replace(/\s+/g, ' ').trim().toLowerCase();
   }
 
   function setText(element, value) {
@@ -33,7 +33,7 @@
     if (!wordElement || !slots.length) return;
 
     const word = wordElement.textContent.trim();
-    const candidates = (window.DEFINEIX_DATA || []).filter(entry =>
+    const entries = (window.DEFINEIX_DATA || []).filter(entry =>
       entry.word === word && Array.isArray(entry.segments) && entry.segments.length === slots.length
     );
 
@@ -42,14 +42,14 @@
       if (!button) return;
 
       const current = button.textContent;
-      const matchingEntry = candidates.find(entry =>
+      const correctEntry = entries.find(entry =>
         comparable(entry.segments[index].correct) === comparable(current)
       );
 
-      if (matchingEntry) {
-        // Quan la peça és al lloc correcte recupera l'escriptura correcta,
-        // però el punt final només apareix en la definició completa.
-        setText(button, stripEnding(matchingEntry.segments[index].correct));
+      if (correctEntry) {
+        // Només una peça situada al seu espai correcte recupera la grafia correcta.
+        // La puntuació final es reserva per a la definició completa.
+        setText(button, stripEnding(correctEntry.segments[index].correct));
       } else {
         setText(button, neutralText(current));
       }
@@ -61,16 +61,24 @@
     formatPlacedOrderPieces();
   }
 
-  let scheduled = false;
+  // Aplica el format immediatament després de qualsevol re-renderitzat.
+  let applying = false;
   const observer = new MutationObserver(() => {
-    if (scheduled) return;
-    scheduled = true;
-    requestAnimationFrame(() => {
-      scheduled = false;
-      applyFormatting();
-    });
+    if (applying) return;
+    applying = true;
+    applyFormatting();
+    applying = false;
   });
-
   observer.observe(app, { childList: true, subtree: true, characterData: true });
+
+  // També ho reapliquem després de clics, perquè moltes pantalles es regeneren en el mateix tick.
+  app.addEventListener('click', () => {
+    queueMicrotask(applyFormatting);
+    setTimeout(applyFormatting, 0);
+  }, true);
+
+  // Garantia inicial per a contingut que ja existia abans d'activar l'observador.
   applyFormatting();
+  setTimeout(applyFormatting, 0);
+  setTimeout(applyFormatting, 50);
 })();
