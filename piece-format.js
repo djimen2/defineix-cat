@@ -21,6 +21,10 @@
     if (element && element.textContent !== value) element.textContent = value;
   }
 
+  function setHTML(element, value) {
+    if (element && element.innerHTML !== value) element.innerHTML = value;
+  }
+
   function neutralizeLoosePieces() {
     app.querySelectorAll('.option-grid .option, .order-pool .order-piece').forEach(button => {
       setText(button, neutralText(button.textContent));
@@ -101,21 +105,27 @@
     const info = challengeInfo(kicker.textContent);
     if (!info) return;
 
-    card.dataset.challengeType = info.type;
+    if (card.dataset.challengeType !== info.type) {
+      card.dataset.challengeType = info.type;
+    }
 
     let callout = card.querySelector('.task-callout');
     if (!callout) {
       callout = document.createElement('div');
-      callout.className = 'task-callout';
+      callout.className = `task-callout task-${info.type}`;
       title.insertAdjacentElement('afterend', callout);
     }
-    callout.className = `task-callout task-${info.type}`;
-    callout.innerHTML = `<strong><span class="task-icon">${info.icon}</span>${info.title}</strong><span>${info.detail}</span>`;
 
-    // A "Què hi sobra?" reduïm encara més l'ambigüitat de l'enunciat llarg.
+    const desiredClass = `task-callout task-${info.type}`;
+    if (callout.className !== desiredClass) callout.className = desiredClass;
+
+    const desiredHTML = `<strong><span class="task-icon">${info.icon}</span>${info.title}</strong><span>${info.detail}</span>`;
+    setHTML(callout, desiredHTML);
+
     if (info.type === 'surplus') {
       const challengeTitle = card.querySelector('.challenge-title');
-      if (challengeTitle) challengeTitle.innerHTML = 'Una peça <strong>sobra</strong>: és certa o possible, però <strong>no cal</strong> per definir aquesta paraula.';
+      const desiredTitle = 'Una peça <strong>sobra</strong>: és certa o possible, però <strong>no cal</strong> per definir aquesta paraula.';
+      setHTML(challengeTitle, desiredTitle);
     }
   }
 
@@ -125,21 +135,24 @@
     enhanceChallengeClarity();
   }
 
-  let applying = false;
-  const observer = new MutationObserver(() => {
-    if (applying) return;
-    applying = true;
-    applyFormatting();
-    applying = false;
-  });
+  let scheduled = false;
+  function scheduleApply() {
+    if (scheduled) return;
+    scheduled = true;
+    requestAnimationFrame(() => {
+      scheduled = false;
+      applyFormatting();
+    });
+  }
+
+  const observer = new MutationObserver(scheduleApply);
   observer.observe(app, { childList: true, subtree: true, characterData: true });
 
   app.addEventListener('click', () => {
-    queueMicrotask(applyFormatting);
-    setTimeout(applyFormatting, 0);
+    queueMicrotask(scheduleApply);
   }, true);
 
   applyFormatting();
-  setTimeout(applyFormatting, 0);
-  setTimeout(applyFormatting, 50);
+  setTimeout(scheduleApply, 0);
+  setTimeout(scheduleApply, 50);
 })();
