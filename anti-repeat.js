@@ -7,134 +7,145 @@
   if (!Array.isArray(DATA) || !API || !APP) return;
 
   const DB_KEY = 'defineix_v01';
-  const RECENT_KEY = 'defineix_recent_words_v1';
-  const MAX_RECENT = 24;
+  const STATE_KEY = 'defineix_rotation_v2';
+  const LEGACY_RECENT_KEY = 'defineix_recent_words_v1';
+  const MAX_RECENT = 30;
 
-  function loadGameDB(){
-    try { return JSON.parse(localStorage.getItem(DB_KEY)) || {}; }
+  function readJSON(key){
+    try { return JSON.parse(localStorage.getItem(key)) || {}; }
     catch(e){ return {}; }
   }
-  function loadRecentDB(){
-    try {
-      const parsed = JSON.parse(localStorage.getItem(RECENT_KEY));
-      return parsed && typeof parsed === 'object' ? parsed : {};
-    } catch(e){ return {}; }
-  }
-  function saveRecentDB(value){
-    try { localStorage.setItem(RECENT_KEY, JSON.stringify(value)); }
+  function writeJSON(key,value){
+    try { localStorage.setItem(key,JSON.stringify(value)); }
     catch(e){}
   }
   function activeProfile(){
-    const db = loadGameDB();
-    const code = db.activeCode;
-    const profile = code && db.profiles ? db.profiles[code] : null;
-    return profile ? {code, profile} : null;
+    const db=readJSON(DB_KEY), code=db.activeCode;
+    const profile=code && db.profiles ? db.profiles[code] : null;
+    return profile ? {code,profile} : null;
   }
-  function recentFor(code){
-    const store = loadRecentDB();
-    return Array.isArray(store[code]) ? store[code].slice(-MAX_RECENT) : [];
-  }
-  function setRecent(code, words){
-    const store = loadRecentDB();
-    store[code] = words.slice(-MAX_RECENT);
-    saveRecentDB(store);
-  }
-  function seedRecentIfNeeded(){
-    const active = activeProfile();
-    if (!active) return [];
-    let recent = recentFor(active.code);
-    if (recent.length) return recent;
-
-    const seen = Array.isArray(active.profile.seen) ? active.profile.seen : [];
-    const seeded = [];
-    for (const id of seen.slice(-MAX_RECENT * 2)) {
-      const entry = DATA.find(item => item.id === id);
-      if (entry && entry.word && !seeded.includes(entry.word)) seeded.push(entry.word);
-    }
-    recent = seeded.slice(-MAX_RECENT);
-    if (recent.length) setRecent(active.code, recent);
-    return recent;
-  }
-  function rememberWord(word){
-    const active = activeProfile();
-    if (!active || !word) return;
-    const clean = String(word).trim();
-    if (!clean) return;
-    let recent = recentFor(active.code).filter(item => item !== clean);
-    recent.push(clean);
-    setRecent(active.code, recent);
-  }
-
-  function entryMatchesGrade(entry, grade){
+  function unique(values){ return [...new Set((values||[]).filter(Boolean))]; }
+  function entryMatchesGrade(entry,grade){
     return Array.isArray(entry.grades) && entry.grades.includes(Number(grade));
   }
+  function eligibleWords(grade){
+    return unique(DATA.filter(e=>entryMatchesGrade(e,grade)).map(e=>e.word));
+  }
 
-  function runWithoutRecent(original, context, args, reserve){
-    const active = activeProfile();
-    if (!active) return original.apply(context, args);
+  function initialSeenWords(active,grade){
+    const words=[];
+    const legacy=readJSON(LEGACY_RECENT_KEY);
+    if(Array.isArray(legacy[active.code])) words.push(...legacy[active.code]);
+    const seen=Array.isArray(active.profile.seen) ? active.profile.seen : [];
+    for(const id of seen){
+      const entry=DATA.find(e=>e.id===id && entryMatchesGrade(e,grade));
+      if(entry?.word) words.push(entry.word);
+    }
+    return unique(words);
+  }
 
-    const grade = Number(active.profile.grade);
-    const recent = seedRecentIfNeeded();
-    if (!recent.length) return original.apply(context, args);
+  function loadState(active){
+    const grade=Number(active.profile.grade);
+    const store=readJSON(STATE_KEY);
+    store[active.code]=store[active.code] || {};
+    let state=store[active.code][grade];
+    if(!state || !Array.isArray(state.used) || !Array.isArray(state.recent)){
+      const seeded=initialSeenWords(active,grade);
+      state={used:[...seeded],recent:seeded.slice(-MAX_RECENT)};
+      store[active.code][grade]=state;
+      writeJSON(STATE_KEY,store);
+    }
+    return {store,grade,state};
+  }
 
-    const eligible = DATA.filter(entry => entryMatchesGrade(entry, grade));
-    const minimumPool = Math.max(reserve, 12);
-    const maxRemovable = Math.max(0, eligible.length - minimumPool);
-    if (!maxRemovable) return original.apply(context, args);
+  function saveState(active,pack){
+    pack.store[active.code]=pack.store[active.code] || {};
+    pack.store[active.code][pack.grade]=pack.state;
+    writeJSON(STATE_KEY,pack.store);
+  }
 
-    const eligibleWords = new Set(eligible.map(entry => entry.word));
-    const recentEligibleNewestFirst = [...recent]
-      .reverse()
-      .filter((word, index, arr) => eligibleWords.has(word) && arr.indexOf(word) === index);
+  function normalizeState(active,pack){
+    const valid=new Set(eligibleWords(pack.grade));
+    pack.state.used=unique(pack.state.used).filter(w=>valid.has(w));
+    pack.state.recent=unique(pack.state.recent).filter(w=>valid.has(w)).slice(-MAX_RECENT);
+    saveState(active,pack);
+    return valid;
+  }
 
-    const wordsToHide = new Set(recentEligibleNewestFirst.slice(0, maxRemovable));
-    if (!wordsToHide.size) return original.apply(context, args);
+  function rememberWord(word){
+    const active=activeProfile();
+    if(!active || !word) return;
+    const clean=String(word).trim();
+    if(!clean) return;
+    const pack=loadState(active);
+    normalizeState(active,pack);
+    if(!pack.state.used.includes(clean)) pack.state.used.push(clean);
+    pack.state.recent=pack.state.recent.filter(w=>w!==clean);
+    pack.state.recent.push(clean);
+    pack.state.recent=pack.state.recent.slice(-MAX_RECENT);
+    saveState(active,pack);
+  }
 
-    const snapshot = DATA.slice();
-    const filtered = snapshot.filter(entry =>
-      !(entryMatchesGrade(entry, grade) && wordsToHide.has(entry.word))
+  function runWithRotation(original,context,args,reserve){
+    const active=activeProfile();
+    if(!active) return original.apply(context,args);
+
+    const pack=loadState(active);
+    const valid=normalizeState(active,pack);
+    if(valid.size <= reserve) return original.apply(context,args);
+
+    let usedSet=new Set(pack.state.used);
+    let remaining=[...valid].filter(w=>!usedSet.has(w));
+
+    // Quan ja queda massa poc banc per construir una sessió variada, comença una
+    // volta nova, però les 30 paraules més recents continuen bloquejades.
+    if(remaining.length < reserve){
+      pack.state.used=[...pack.state.recent];
+      saveState(active,pack);
+      usedSet=new Set(pack.state.used);
+      remaining=[...valid].filter(w=>!usedSet.has(w));
+    }
+
+    if(remaining.length < reserve) return original.apply(context,args);
+
+    const snapshot=DATA.slice();
+    const filtered=snapshot.filter(entry =>
+      !(entryMatchesGrade(entry,pack.grade) && usedSet.has(entry.word))
     );
-
-    DATA.splice(0, DATA.length, ...filtered);
+    DATA.splice(0,DATA.length,...filtered);
     try {
-      return original.apply(context, args);
+      return original.apply(context,args);
     } finally {
-      DATA.splice(0, DATA.length, ...snapshot);
+      DATA.splice(0,DATA.length,...snapshot);
     }
   }
 
-  function wrap(name, reserve){
-    const original = API[name];
-    if (typeof original !== 'function' || original.__antiRepeatWrapped) return;
-    const wrapped = function(...args){
-      return runWithoutRecent(original, this, args, reserve);
-    };
-    wrapped.__antiRepeatWrapped = true;
-    API[name] = wrapped;
+  function wrap(name,reserve){
+    const original=API[name];
+    if(typeof original!=='function' || original.__rotationWrapped) return;
+    const wrapped=function(...args){ return runWithRotation(original,this,args,reserve); };
+    wrapped.__rotationWrapped=true;
+    API[name]=wrapped;
   }
 
-  // Jugar i Entrenar eviten les últimes 24 paraules sempre que el banc del curs
-  // tingui prou alternatives. "Practicar els meus errors" no es filtra expressament,
-  // perquè en aquell mode sí que interessa recuperar paraules fallades.
-  wrap('startPlay', 18);
-  wrap('startTraining', 16);
+  // Una partida necessita 10 paraules. Mantenim un marge més gran perquè el
+  // selector adaptatiu continuï tenint opcions de dificultat i categories diverses.
+  wrap('startPlay',24);
+  wrap('startTraining',20);
+  // "Practicar els meus errors" no es toca: repetir errors és precisament l’objectiu.
 
-  let lastDisplayed = null;
+  let lastDisplayed=null;
   function captureDisplayedWord(){
-    const title = APP.querySelector('.game-card .word-title');
-    if (!title) {
-      lastDisplayed = null;
-      return;
-    }
-    const word = title.textContent.trim();
-    if (word && word !== lastDisplayed) {
-      lastDisplayed = word;
+    const title=APP.querySelector('.game-card .word-title');
+    if(!title){ lastDisplayed=null; return; }
+    const word=title.textContent.trim();
+    if(word && word!==lastDisplayed){
+      lastDisplayed=word;
       rememberWord(word);
     }
   }
 
-  const observer = new MutationObserver(captureDisplayedWord);
-  observer.observe(APP, {childList:true, subtree:true, characterData:true});
-  seedRecentIfNeeded();
+  const observer=new MutationObserver(captureDisplayedWord);
+  observer.observe(APP,{childList:true,subtree:true,characterData:true});
   captureDisplayedWord();
 })();
