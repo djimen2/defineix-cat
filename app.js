@@ -11,6 +11,7 @@
     missing:{icon:'🕳️',name:'Què hi falta?',desc:'Completa la part que falta en una definició.'},
     surplus:{icon:'🧹',name:'Què hi sobra?',desc:'Detecta la informació que no és necessària per definir.'}
   };
+  const ADAPTIVE_LABELS = {1:'Pas a pas',2:'Consolidant',3:'En marxa',4:'Repte',5:'Repte+'};
 
   let db = loadDB();
   let screen = db.activeCode && db.profiles[db.activeCode] ? 'dashboard' : 'landing';
@@ -28,9 +29,14 @@
     return {profiles:{},activeCode:null};
   }
   function saveDB(){ localStorage.setItem(STORAGE_KEY, JSON.stringify(db)); }
-  function profile(){ return db.activeCode ? db.profiles[db.activeCode] : null; }
+  function profile(){
+    const p=db.activeCode ? db.profiles[db.activeCode] : null;
+    if(p) ensureProfile(p);
+    return p;
+  }
   function esc(value){ return String(value ?? '').replace(/[&<>'"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[c])); }
   function spaces(v){ return String(v || '').trim().replace(/\s+/g,' '); }
+  function clamp(n,min,max){ return Math.max(min,Math.min(max,n)); }
   function shuffle(arr, rnd=Math.random){
     const a=[...arr];
     for(let i=a.length-1;i>0;i--){ const j=Math.floor(rnd()*(i+1)); [a[i],a[j]]=[a[j],a[i]]; }
@@ -59,6 +65,63 @@
   function cycleName(grade){ return grade<=2?'Cicle inicial':grade<=4?'Cicle mitjà':'Cicle superior'; }
   function gradeLabel(grade){ return ({1:'1r',2:'2n',3:'3r',4:'4t',5:'5è',6:'6è'})[Number(grade)] || `${grade}è`; }
   function clearTransition(){ if(transitionTimer){clearTimeout(transitionTimer);transitionTimer=null;} }
+
+  function ensureProfile(p){
+    p.seen=Array.isArray(p.seen)?p.seen:[];
+    p.errors=p.errors||{};
+    p.stats=p.stats||{};
+    p.stats.correct=p.stats.correct||0;
+    p.stats.total=p.stats.total||0;
+    p.stats.games=p.stats.games||0;
+    p.stats.dailyCompleted=p.stats.dailyCompleted||0;
+    p.stats.dailyStreak=p.stats.dailyStreak||0;
+    p.stats.bestDailyStreak=p.stats.bestDailyStreak||0;
+    p.adaptive=p.adaptive||{};
+    for(const type of TYPES){
+      const current=p.adaptive[type]||{};
+      p.adaptive[type]={
+        level:clamp(Number(current.level)||3,1,5),
+        history:Array.isArray(current.history)?current.history.slice(-20):[],
+        sinceChange:Number(current.sinceChange)||0,
+        total:Number(current.total)||0,
+        perfect:Number(current.perfect)||0,
+        lastChange:current.lastChange||null
+      };
+    }
+    p.dailySet=p.dailySet||null;
+    return p;
+  }
+  Object.values(db.profiles||{}).forEach(ensureProfile);
+  saveDB();
+
+  function adaptiveLabel(level){ return ADAPTIVE_LABELS[clamp(Number(level)||3,1,5)]; }
+  function adaptiveState(p,type){ ensureProfile(p); return p.adaptive[type]; }
+  function entryDifficulty(entry,type){
+    const concept=clamp(Number(entry.conceptDifficulty)||3,1,5);
+    const definition=clamp(Number(entry.definitionDifficulty)||concept,1,5);
+    const weighted=type==='surplus' ? concept*.55+definition*.45 : concept*.35+definition*.65;
+    return clamp(Math.round(weighted),1,5);
+  }
+  function recordAdaptive(p,type,performance){
+    const state=adaptiveState(p,type), value=clamp(Number(performance)||0,0,1);
+    state.history.push(value); if(state.history.length>20) state.history.shift();
+    state.sinceChange++; state.total++; if(value>=.999) state.perfect++;
+    let change=null;
+    if(state.level>1 && state.sinceChange>=10){
+      const recent=state.history.slice(-10);
+      if(recent.length===10 && recent.reduce((a,b)=>a+b,0)/10<=.55){
+        change={type,from:state.level,to:state.level-1}; state.level--;
+      }
+    }
+    if(!change && state.level<5 && state.sinceChange>=15){
+      const recent=state.history.slice(-15);
+      if(recent.length===15 && recent.reduce((a,b)=>a+b,0)/15>=.85){
+        change={type,from:state.level,to:state.level+1}; state.level++;
+      }
+    }
+    if(change){ state.history=[]; state.sinceChange=0; state.lastChange=today(); }
+    return change;
+  }
 
   function topbar(showPlayer=true, compact=false){
     const p=profile();
@@ -143,6 +206,7 @@
         <div class="stat"><strong>📅 ${p.stats.dailyCompleted||0}</strong><span>REPTES SUPERATS</span></div>
       </div>
       <div class="progress-wrap"><div class="progress-meta"><span>Nivell ${lvl}</span><span>${xp}/500 XP</span></div><div class="progress-track"><div class="progress-fill" style="width:${(xp/500)*100}%"></div></div></div>
+      <div class="notice" style="margin-top:14px"><strong>🎯 Dificultat adaptativa activa.</strong> DEFINEIX! ajusta cada tipus de repte segons com vas evolucionant, sense canviar el teu curs.</div>
       <div class="mode-grid">
         <button class="mode-card" onclick="Defineix.startPlay()"><div class="mode-icon">🎮</div><h3>JUGAR</h3><p>10 paraules, reptes variats i punts per pujar a la classificació.</p></button>
         <button class="mode-card train" onclick="Defineix.go('training')"><div class="mode-icon">🧠</div><h3>ENTRENAR</h3><p>Tria exactament quin tipus d’activitat vols practicar.</p></button>
@@ -155,7 +219,7 @@
   function renderTraining(){
     const p=profile(); if(!p){screen='landing';return render();}
     app.innerHTML = `${topbar()}<section class="screen">
-      <div class="section-head"><div><span class="eyebrow">🧠 Mode entrenament</span><h1>Què vols practicar?</h1><p>Aquí l’objectiu és aprendre. Guanyaràs XP, però no punts de classificació.</p></div></div>
+      <div class="section-head"><div><span class="eyebrow">🧠 Mode entrenament</span><h1>Què vols practicar?</h1><p>Tria l’activitat. La dificultat s’ajustarà automàticament al teu ritme.</p></div></div>
       <div class="training-grid">
         ${TYPES.map(t=>`<button class="training-card" onclick="Defineix.startTraining('${t}')"><div class="mode-icon">${TYPE_INFO[t].icon}</div><strong>${TYPE_INFO[t].name}</strong><span>${TYPE_INFO[t].desc}</span></button>`).join('')}
         <button class="training-card" onclick="Defineix.startTraining('random')"><div class="mode-icon">🎲</div><strong>Entrenament variat</strong><span>Barreja tots els tipus de repte.</span></button>
@@ -165,13 +229,18 @@
     </section>`;
   }
 
+  function adaptiveProfileHTML(p){
+    return `<div class="panel profile-panel"><div class="section-head"><div><strong>Ritme adaptatiu</strong><p>El curs no canvia. DEFINEIX! regula la dificultat de cada activitat segons els teus últims resultats.</p></div></div><div class="badge-grid">${TYPES.map(type=>{const st=adaptiveState(p,type);return `<div class="badge"><div class="emoji">${TYPE_INFO[type].icon}</div><strong>${TYPE_INFO[type].name}</strong><span>${adaptiveLabel(st.level)}</span></div>`;}).join('')}</div></div>`;
+  }
+
   function renderProfile(){
     const p=profile(); if(!p){screen='landing';return render();}
     const badges=getBadges(p), accuracy=p.stats.total?Math.round((p.stats.correct/p.stats.total)*100):0;
     app.innerHTML = `${topbar()}<section class="screen">
       <div class="section-head"><div><span class="eyebrow">👤 Perfil</span><h1>${esc(p.alias)}</h1><p>${esc(p.school)} · ${esc(p.city)} · ${gradeLabel(p.grade)}</p></div><button class="btn btn-primary" onclick="Defineix.go('dashboard')">🎮 Anar al menú de joc</button></div>
-      <div class="stats-row"><div class="stat"><strong>⭐ ${levelFor(p.xp)}</strong><span>NIVELL</span></div><div class="stat"><strong>${p.xp||0}</strong><span>XP TOTAL</span></div><div class="stat"><strong>${accuracy}%</strong><span>PRECISIÓ</span></div><div class="stat"><strong>${p.stats.correct||0}</strong><span>ENCERTS</span></div></div>
+      <div class="stats-row"><div class="stat"><strong>⭐ ${levelFor(p.xp)}</strong><span>NIVELL</span></div><div class="stat"><strong>${p.xp||0}</strong><span>XP TOTAL</span></div><div class="stat"><strong>${accuracy}%</strong><span>PRECISIÓ</span></div><div class="stat"><strong>${p.stats.correct||0}</strong><span>REPTES PERFECTES</span></div></div>
       <div class="panel profile-panel"><strong>El teu codi de jugador</strong><div class="profile-code">${esc(p.code)}</div><div class="notice">Guarda aquest codi. En aquesta versió encara només recupera el perfil en aquest dispositiu; serà multiplataforma quan activem la base de dades compartida.</div></div>
+      ${adaptiveProfileHTML(p)}
       <div class="panel profile-panel"><div class="section-head"><div><strong>Insígnies</strong><p>Recompenses pel teu progrés i constància.</p></div></div><div class="badge-grid">${badges.map(b=>`<div class="badge ${b.unlocked?'':'locked'}"><div class="emoji">${b.emoji}</div><strong>${b.name}</strong><span>${b.desc}</span></div>`).join('')}</div></div>
       <div class="actions"><button class="btn btn-soft" onclick="Defineix.go('dashboard')">← Tornar al menú</button><button class="btn btn-danger" onclick="Defineix.logout()">Canviar de jugador</button></div>
     </section>`;
@@ -186,36 +255,71 @@
     </section>`;
   }
 
-  function wordsForGrade(grade){ return DATA.filter(w=>w.grades.includes(Number(grade))); }
-  function selectWords(count, opts={}){
-    const p=profile(), all=wordsForGrade(p.grade); if(!all.length) return [];
+  function wordsForGrade(grade){ return DATA.filter(w=>Array.isArray(w.grades)&&w.grades.includes(Number(grade))); }
+  function pickEntry(type, used, rnd, opts={}){
+    const p=profile(), all=wordsForGrade(p.grade); if(!all.length) return null;
     let pool=[...all];
     if(opts.errorsOnly){
-      const errs=pool.filter(w=>(p.errors?.[w.id]||0)>0).sort((a,b)=>(p.errors[b.id]||0)-(p.errors[a.id]||0));
-      if(errs.length) pool=[...errs,...shuffle(pool.filter(w=>!errs.includes(w)))];
-    }else{
-      const unseen=pool.filter(w=>!(p.seen||[]).includes(w.id));
-      pool=[...shuffle(unseen),...shuffle(pool.filter(w=>(p.seen||[]).includes(w.id)))];
+      const errored=pool.filter(w=>(p.errors?.[w.id]||0)>0);
+      if(errored.length) pool=errored;
     }
-    const out=[];
-    while(out.length<count && pool.length){
-      for(const w of pool){ out.push(w); if(out.length===count) break; }
+    const target=adaptiveState(p,type).level;
+    const seen=p.seen||[];
+    const scored=pool.map(entry=>{
+      const diff=entryDifficulty(entry,type), errors=p.errors?.[entry.id]||0;
+      let score=Math.abs(diff-target)*10 + rnd()*3;
+      if(used.has(entry.id)) score+=100;
+      if(!seen.includes(entry.id)) score-=3;
+      if(opts.errorsOnly) score-=Math.min(errors,5)*2;
+      else if(errors>0) score-=Math.min(errors,3)*.8;
+      if(target<=2 && entry.vocab==='curricular') score+=5;
+      if(target>=4 && entry.vocab==='quotidia' && diff<target-1) score+=3;
+      return {entry,diff,score};
+    }).sort((a,b)=>a.score-b.score);
+    const best=scored[0]||null;
+    return best?{entry:best.entry,difficulty:best.diff,targetLevel:target}:null;
+  }
+
+  function buildChallenges(count, fixedType=null, rnd=Math.random, opts={}){
+    const used=new Set(), out=[];
+    for(let i=0;i<count;i++){
+      const type=fixedType && fixedType!=='random' ? fixedType : TYPES[Math.floor(rnd()*TYPES.length)];
+      let picked=pickEntry(type,used,rnd,opts);
+      if(!picked && used.size){ used.clear(); picked=pickEntry(type,used,rnd,opts); }
+      if(!picked) break;
+      used.add(picked.entry.id);
+      out.push({entry:picked.entry,type,difficulty:picked.difficulty,targetLevel:picked.targetLevel});
     }
     return out;
   }
-  function createChallenges(words, fixedType=null, rnd=Math.random){
-    return words.map(entry=>({entry,type:fixedType && fixedType!=='random'?fixedType:TYPES[Math.floor(rnd()*TYPES.length)]}));
+
+  function dailyChallenges(p,rnd){
+    const d=today();
+    if(p.dailySet?.date===d && Array.isArray(p.dailySet.items)){
+      const restored=p.dailySet.items.map(item=>{
+        const entry=DATA.find(w=>w.id===item.id && w.grades?.includes(Number(p.grade)));
+        if(!entry||!TYPES.includes(item.type)) return null;
+        return {entry,type:item.type,difficulty:entryDifficulty(entry,item.type),targetLevel:adaptiveState(p,item.type).level};
+      }).filter(Boolean);
+      if(restored.length===3) return restored;
+    }
+    const built=buildChallenges(3,null,rnd,{});
+    p.dailySet={date:d,items:built.map(c=>({id:c.entry.id,type:c.type}))};
+    saveDB();
+    return built;
   }
 
   function startSession(mode, fixedType=null, errorsOnly=false){
     const p=profile(); if(!p) return;
     clearTransition(); welcomeCode=null;
-    let words, rnd=Math.random;
+    let rnd=Math.random, challenges;
     if(mode==='daily'){
-      rnd=mulberry32(hash(today()+'|'+p.grade+'|DEFINEIX'));
-      words=shuffle(wordsForGrade(p.grade),rnd).slice(0,3);
-    }else words=selectWords(mode==='play'?10:8,{errorsOnly});
-    session={mode,fixedType,index:0,challenges:createChallenges(words,fixedType,rnd),correct:0,score:0,sessionStreak:0,maxSessionStreak:0,gainedXP:0,finished:false};
+      rnd=mulberry32(hash(today()+'|'+p.grade+'|'+p.code+'|DEFINEIX'));
+      challenges=dailyChallenges(p,rnd);
+    }else{
+      challenges=buildChallenges(mode==='play'?10:8,fixedType,rnd,{errorsOnly});
+    }
+    session={mode,fixedType,index:0,challenges,correct:0,score:0,sessionStreak:0,maxSessionStreak:0,gainedXP:0,finished:false,adaptiveChanges:[]};
     challengeState=null;screen='game';render();
   }
 
@@ -237,7 +341,7 @@
 
   function initChallenge(c){
     const e=c.entry;
-    if(c.type==='build') return {step:0,hadError:false,transitioning:false,completed:false,feedback:null,wrong:{},orders:e.segments.map(seg=>shuffle(seg.options.map((text,index)=>({text,index}))))};
+    if(c.type==='build') return {step:0,hadError:false,transitioning:false,completed:false,feedback:null,wrong:{},firstTry:e.segments.map(()=>null),orders:e.segments.map(seg=>shuffle(seg.options.map((text,index)=>({text,index}))))};
     if(c.type==='missing'){
       const missing=Math.floor(Math.random()*e.segments.length);
       return {missing,options:shuffle(e.segments[missing].options.map((text,index)=>({text,index}))),wrong:[],hadError:false,completed:false,feedback:null};
@@ -265,7 +369,6 @@
     }
 
     if(c.type==='missing'){
-      const miss=e.segments[s.missing];
       const parts=e.segments.map((seg,i)=>i===s.missing?`<span class="segment placeholder">${esc(seg.label)}: ?</span>`:`<span class="segment">${esc(seg.correct)}</span>`).join('');
       return `<p class="challenge-title">Quina informació completa millor aquesta definició?</p><div class="definition-builder">${parts}</div>${s.feedback?`<div class="mini-feedback bad">↺ ${esc(s.feedback.text)}</div>`:''}<div class="option-grid">${s.options.map((o,i)=>`<button class="option ${s.wrong.includes(i)?'is-wrong':''}" ${s.wrong.includes(i)?'disabled':''} onclick="Defineix.answerMissing(${i})">${esc(o.text)}</button>`).join('')}</div>`;
     }
@@ -285,8 +388,9 @@
   function answerBuild(index){
     const c=session.challenges[session.index],e=c.entry,s=challengeState;
     if(s.transitioning||s.completed) return;
-    const seg=e.segments[s.step], chosen=s.orders[s.step][index];
-    if(chosen.text!==seg.correct){
+    const seg=e.segments[s.step], chosen=s.orders[s.step][index], ok=chosen.text===seg.correct;
+    if(s.firstTry[s.step]===null) s.firstTry[s.step]=ok?1:0;
+    if(!ok){
       s.hadError=true; s.wrong[s.step]=s.wrong[s.step]||[]; if(!s.wrong[s.step].includes(index))s.wrong[s.step].push(index);
       s.feedback={good:false,text:'No és aquesta. Prova una altra opció.'}; renderCurrentOnly(); return;
     }
@@ -335,20 +439,34 @@
 
   function renderCurrentOnly(){ renderGame(); }
   function definition(entry){ return entry.segments.map(s=>s.correct).join(' ').replace(/\s+([,.!?;:])/g,'$1')+'.'; }
+  function challengePerformance(c,s){
+    if(c.type==='build'){
+      const values=s.firstTry.filter(v=>v!==null);
+      return values.length?values.reduce((a,b)=>a+b,0)/values.length:(s.hadError?0:1);
+    }
+    return s.hadError?0:1;
+  }
   function finishCurrent(){
     if(!challengeState?.completed)return;
-    completeChallenge(!challengeState.hadError);
+    const c=session.challenges[session.index], performance=challengePerformance(c,challengeState);
+    completeChallenge(!challengeState.hadError,performance);
   }
 
-  function completeChallenge(correct){
-    const p=profile(),c=session.challenges[session.index];
+  function completeChallenge(perfect,performance){
+    const p=profile(),c=session.challenges[session.index],difficulty=c.difficulty||entryDifficulty(c.entry,c.type);
     p.stats.total=(p.stats.total||0)+1;
     p.seen=p.seen||[];if(!p.seen.includes(c.entry.id))p.seen.push(c.entry.id);
     p.errors=p.errors||{};
-    if(correct){
+    const adaptiveChange=recordAdaptive(p,c.type,performance);
+    if(adaptiveChange) session.adaptiveChanges.push(adaptiveChange);
+    if(perfect){
       p.stats.correct=(p.stats.correct||0)+1;session.correct++;session.sessionStreak++;session.maxSessionStreak=Math.max(session.maxSessionStreak,session.sessionStreak);if(p.errors[c.entry.id])p.errors[c.entry.id]=Math.max(0,p.errors[c.entry.id]-1);
-      const xpGain=session.mode==='training'?12:session.mode==='daily'?25:20+(p.grade*2);p.xp=(p.xp||0)+xpGain;session.gainedXP+=xpGain;
-      if(session.mode==='play'){const pts=100+(p.grade-1)*15+Math.min(session.sessionStreak,5)*10;p.points=(p.points||0)+pts;session.score+=pts;}
+      const xpGain=session.mode==='training'?8+difficulty*2:session.mode==='daily'?15+difficulty*3:14+difficulty*3+p.grade;
+      p.xp=(p.xp||0)+xpGain;session.gainedXP+=xpGain;
+      if(session.mode==='play'){
+        const pts=70+difficulty*30+p.grade*5+Math.min(session.sessionStreak,5)*10;
+        p.points=(p.points||0)+pts;session.score+=pts;
+      }
     }else{
       session.sessionStreak=0;p.errors[c.entry.id]=(p.errors[c.entry.id]||0)+1;p.xp=(p.xp||0)+3;session.gainedXP+=3;
     }
@@ -370,9 +488,10 @@
 
   function renderResults(){
     if(!session){screen='dashboard';return render();}
-    const total=session.challenges.length,pct=Math.round((session.correct/total)*100),passed=session.mode!=='daily'||session.correct>=2;
+    const total=session.challenges.length,pct=total?Math.round((session.correct/total)*100):0,passed=session.mode!=='daily'||session.correct>=2;
     const headline=session.mode==='daily'?(passed?'Repte superat!':'Torna-ho a intentar!'):(pct>=90?'Brillant!':pct>=70?'Molt bona partida!':pct>=50?'Bon entrenament!':'Continua practicant!');
-    app.innerHTML=`${topbar()}<section class="screen panel result-card"><div class="result-emoji">${session.mode==='daily'?(passed?'⚡':'🧠'):(pct>=80?'🏆':'🧩')}</div><span class="eyebrow">Final de la partida</span><h1>${headline}</h1><div class="result-score">${session.correct}/${total}</div><p class="result-meta">${pct}% de reptes perfectes · +${session.gainedXP} XP${session.mode==='play'?` · +${session.score} punts`:''}</p>${session.mode==='daily'&&passed?`<div class="feedback good">📅 ${session.dailyAward?'Has sumat un nou repte diari.':'Ja havies superat el repte d’avui. La pràctica igualment et dona XP.'}</div>`:''}${session.mode==='daily'&&!passed?'<div class="feedback bad">Necessites completar perfectament almenys 2 dels 3 reptes. Pots tornar-hi avui tantes vegades com vulguis.</div>':''}<div class="actions result-actions"><button class="btn btn-primary" onclick="Defineix.go('dashboard')">Tornar al menú</button>${session.mode==='daily'&&!passed?'<button class="btn btn-secondary" onclick="Defineix.startDaily()">Repetir repte</button>':''}</div></section>`;
+    const adaptiveNote=session.adaptiveChanges.length?'<div class="notice" style="margin-top:16px"><strong>🎯 DEFINEIX! s’ha adaptat al teu ritme.</strong> En les properes partides ajustarà una mica la dificultat d’alguns tipus de repte segons els teus últims resultats.</div>':'';
+    app.innerHTML=`${topbar()}<section class="screen panel result-card"><div class="result-emoji">${session.mode==='daily'?(passed?'⚡':'🧠'):(pct>=80?'🏆':'🧩')}</div><span class="eyebrow">Final de la partida</span><h1>${headline}</h1><div class="result-score">${session.correct}/${total}</div><p class="result-meta">${pct}% de reptes perfectes · +${session.gainedXP} XP${session.mode==='play'?` · +${session.score} punts`:''}</p>${session.mode==='daily'&&passed?`<div class="feedback good">📅 ${session.dailyAward?'Has sumat un nou repte diari.':'Ja havies superat el repte d’avui. La pràctica igualment et dona XP.'}</div>`:''}${session.mode==='daily'&&!passed?'<div class="feedback bad">Necessites completar perfectament almenys 2 dels 3 reptes. Pots tornar-hi avui tantes vegades com vulguis.</div>':''}${adaptiveNote}<div class="actions result-actions"><button class="btn btn-primary" onclick="Defineix.go('dashboard')">Tornar al menú</button>${session.mode==='daily'&&!passed?'<button class="btn btn-secondary" onclick="Defineix.startDaily()">Repetir repte</button>':''}</div></section>`;
   }
 
   function getBadges(p){
@@ -393,11 +512,13 @@
   function createProfile(event){
     event.preventDefault();const f=new FormData(event.target),alias=spaces(f.get('alias')),grade=Number(f.get('grade')),school=spaces(f.get('school')),city=spaces(f.get('city'));
     if(alias.length<2||alias.length>18||!grade||!school||!city)return;
-    const code=generateCode();db.profiles[code]={code,alias,grade,school,city,xp:0,points:0,seen:[],errors:{},createdAt:new Date().toISOString(),stats:{correct:0,total:0,games:0,dailyCompleted:0,dailyStreak:0,bestDailyStreak:0,lastDailyAward:null}};db.activeCode=code;welcomeCode=code;saveDB();screen='dashboard';render();
+    const code=generateCode();
+    const p={code,alias,grade,school,city,xp:0,points:0,seen:[],errors:{},createdAt:new Date().toISOString(),stats:{correct:0,total:0,games:0,dailyCompleted:0,dailyStreak:0,bestDailyStreak:0,lastDailyAward:null}};
+    ensureProfile(p);db.profiles[code]=p;db.activeCode=code;welcomeCode=code;saveDB();screen='dashboard';render();
   }
   function recoverProfile(event){
     event.preventDefault();const code=spaces(new FormData(event.target).get('code')).toUpperCase(),msg=document.getElementById('recover-msg');
-    if(db.profiles[code]){db.activeCode=code;welcomeCode=null;saveDB();screen='dashboard';render();}else if(msg)msg.innerHTML='<div class="feedback bad">No trobo aquest codi en aquest dispositiu. La recuperació entre dispositius arribarà amb la base de dades compartida.</div>';
+    if(db.profiles[code]){db.activeCode=code;ensureProfile(db.profiles[code]);welcomeCode=null;saveDB();screen='dashboard';render();}else if(msg)msg.innerHTML='<div class="feedback bad">No trobo aquest codi en aquest dispositiu. La recuperació entre dispositius arribarà amb la base de dades compartida.</div>';
   }
   function logout(){clearTransition();db.activeCode=null;saveDB();session=null;challengeState=null;welcomeCode=null;screen='landing';render();}
   function quitSession(){if(confirm('Vols sortir de la partida?')){clearTransition();session=null;challengeState=null;screen='dashboard';render();}}
